@@ -37,6 +37,7 @@
   a{color:#64d2ff}
   .hidden{display:none}
   .msg{white-space:pre-wrap}
+  a.openBtn{display:block;text-align:center;font-size:18px;font-weight:700;padding:14px;border-radius:12px;background:var(--ok);color:#000;text-decoration:none;margin:12px 0 6px}
 </style>
 </head>
 <body>
@@ -81,6 +82,7 @@
   <div class="card hidden" id="resultCard">
     <h2 id="resultTitle"></h2>
     <p class="msg" id="resultMsg"></p>
+    <div id="appBox" class="hidden"></div>
     <button class="sub" id="againBtn">別のファイルをアップする</button>
   </div>
 
@@ -271,6 +273,65 @@ $("fileInput").onchange = async (ev) => {
   $("checkCard").scrollIntoView({behavior:"smooth"});
 };
 
+
+/* ---------- v1.1：ホーム画面用の準備（アイコン・名前） ---------- */
+function findMainHtml(files){
+  const root = files.filter(x => !x.path.includes("/") && /\.html?$/i.test(x.path));
+  return root.find(x => /^index\.html?$/i.test(x.path)) || (root.length === 1 ? root[0] : null);
+}
+function makeIcon(name){
+  const c = document.createElement("canvas"); c.width = c.height = 180;
+  const g = c.getContext("2d");
+  let h = 0; for (const ch of name) h = (h*31 + ch.charCodeAt(0)) % 360;
+  g.fillStyle = "hsl("+h+",55%,38%)"; g.fillRect(0,0,180,180);
+  g.fillStyle = "#fff"; g.font = "bold 110px -apple-system, Helvetica, sans-serif";
+  g.textAlign = "center"; g.textBaseline = "middle";
+  g.fillText((name[0]||"A").toUpperCase(), 90, 98);
+  const bin = atob(c.toDataURL("image/png").split(",")[1]);
+  const u8 = new Uint8Array(bin.length); for (let i=0;i<bin.length;i++) u8[i] = bin.charCodeAt(i);
+  return u8;
+}
+function prepareForHome(files, repo){
+  const main = findMainHtml(files);
+  const notes = [];
+  if (!main) return {page:null, notes};
+  let html;
+  try{ html = new TextDecoder("utf-8",{fatal:true}).decode(main.data); }catch(e){ return {page:main.path, notes}; }
+  if (/charset\s*=\s*["']?(shift_jis|sjis|euc-jp)/i.test(html)) return {page:main.path, notes};
+  const add = [];
+  if (!/rel\s*=\s*["']?apple-touch-icon/i.test(html)){
+    const iconPath = "gitup-icon.png";
+    if (!files.some(x => x.path === iconPath)){
+      const data = makeIcon(repo); files.push({path:iconPath, size:data.length, data});
+    }
+    add.push('<link rel="apple-touch-icon" href="'+iconPath+'">');
+    notes.push("アイコンを自動で作りました");
+  }
+  if (!/apple-mobile-web-app-title/i.test(html)){
+    const m = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+    const t = (m && m[1].trim()) || repo;
+    add.push('<meta name="apple-mobile-web-app-title" content="'+t.replace(/"/g,"&quot;")+'">');
+    notes.push("ホーム画面での名前を「"+t+"」にしました");
+  }
+  if (!/apple-mobile-web-app-capable/i.test(html)){
+    add.push('<meta name="apple-mobile-web-app-capable" content="yes">');
+  }
+  if (add.length){
+    const block = "\n"+add.join("\n")+"\n";
+    if (/<\/head>/i.test(html)) html = html.replace(/<\/head>/i, block+"</head>");
+    else if (/<html[^>]*>/i.test(html)) html = html.replace(/<html[^>]*>/i, m => m+"<head>"+block+"</head>");
+    else html = "<head>"+block+"</head>\n"+html;
+    main.data = new TextEncoder().encode(html); main.size = main.data.length;
+  }
+  return {page:main.path, notes};
+}
+async function publish(full, branch){
+  try{ await gh("GET", full+"/pages"); return {ok:true, isNew:false}; }
+  catch(e){ if (e.status !== 404) return {ok:false}; }
+  try{ await gh("POST", full+"/pages", {source:{branch, path:"/"}}); return {ok:true, isNew:true}; }
+  catch(e){ return {ok:false}; }
+}
+
 /* ---------- アップロード本体 ---------- */
 function b64(u8){
   let s = ""; const CH = 0x8000;
@@ -323,11 +384,15 @@ $("uploadBtn").onclick = async () => {
     const parentSha = ref.object.sha;
     const parent = await gh("GET", full+"/git/commits/"+parentSha);
 
+    // 2.5 ホーム画面用の準備
+    const files = pending.map(x => ({path:x.path, size:x.size, data:x.data}));
+    const home = prepareForHome(files, repo);
+
     // 3. ファイルを1つずつ送る
     const tree = [];
-    for (let i=0;i<pending.length;i++){
-      const x = pending[i];
-      setProgress("送信中 "+(i+1)+" / "+pending.length+"：\n"+x.path, 0.05 + 0.85*(i/pending.length));
+    for (let i=0;i<files.length;i++){
+      const x = files[i];
+      setProgress("送信中 "+(i+1)+" / "+files.length+"：\n"+x.path, 0.05 + 0.82*(i/files.length));
       const blob = await gh("POST", full+"/git/blobs",{content:b64(x.data), encoding:"base64"});
       tree.push({path:x.path, mode:"100644", type:"blob", sha:blob.sha});
     }
@@ -339,11 +404,20 @@ $("uploadBtn").onclick = async () => {
     const stamp = now.getFullYear()+"-"+pad(now.getMonth()+1)+"-"+pad(now.getDate())+" "+pad(now.getHours())+":"+pad(now.getMinutes());
     const commit = await gh("POST", full+"/git/commits",{message:"Upload "+pending.length+" files via GitUp ("+stamp+")", tree:newTree.sha, parents:[parentSha]});
     await gh("PATCH", full+"/git/refs/heads/"+encodeURIComponent(branch),{sha:commit.sha});
+
+    // 5. 公開（iPhoneで開けるようにする）
+    let pub = {ok:false}, appUrl = null;
+    if (home.page){
+      setProgress("iPhoneで開けるように公開しています…", 0.97);
+      pub = await publish(full, branch);
+      appUrl = "https://"+login.toLowerCase()+".github.io/"+repo+"/"+(/^index\.html?$/i.test(home.page) ? "" : encodeURI(home.page));
+    }
     setProgress("完了", 1);
 
-    addHistory({repo, n:pending.length, t:stamp, created});
-    const url = "https://github.com/"+login+"/"+repo;
-    showResult(true, (created?"新しく「"+repo+"」を作って、":"「"+repo+"」に上書きで、")+pending.length+" 個のファイルをアップしました。", url);
+    addHistory({repo, n:pending.length, t:stamp, created, app: pub.ok ? appUrl : null});
+    let msg = (created?"新しく「"+repo+"」を作って、":"「"+repo+"」に上書きで、")+pending.length+" 個のファイルをアップしました。";
+    if (home.notes.length) msg += "\n（"+home.notes.join("・")+"）";
+    showResult(true, msg, "https://github.com/"+login+"/"+repo, {home, pub, appUrl, full});
   }catch(e){
     showResult(false, e.message || "うまくいきませんでした。もう一度お試しください。");
   }finally{
@@ -353,9 +427,27 @@ $("uploadBtn").onclick = async () => {
 };
 
 /* ---------- 結果・履歴 ---------- */
-function showResult(ok, msg, url){
+function showResult(ok, msg, url, extra){
   $("resultTitle").innerHTML = ok ? '<span class="ok">✓ アップできました</span>' : '<span class="ng">✕ アップできませんでした</span>';
   const m = $("resultMsg"); m.textContent = msg;
+  const box = $("appBox"); box.innerHTML = ""; box.classList.add("hidden");
+  if (extra && extra.home && extra.home.page){
+    box.classList.remove("hidden");
+    if (extra.pub.ok){
+      const a = document.createElement("a"); a.className = "openBtn"; a.href = extra.appUrl; a.target = "_blank"; a.rel = "noopener"; a.textContent = "アプリを開く";
+      const p1 = document.createElement("p"); p1.className = "muted";
+      p1.textContent = (extra.pub.isNew ? "初めての公開なので、開けるようになるまで1〜2分かかります。「404」と出たら少し待って開き直してください。"
+                                        : "1〜2分で新しい内容に切り替わります。古いままなら、一度閉じて開き直してください。");
+      const p2 = document.createElement("p"); p2.className = "msg";
+      p2.textContent = "ホーム画面に置くには：\nアプリを開く →「共有」ボタン（四角から上向き矢印）→「ホーム画面に追加」→「追加」\n※ 一度追加したアプリは、次の更新から追加し直す必要はありません。";
+      box.append(a, p1, p2);
+    } else {
+      const p = document.createElement("p"); p.className = "msg warn";
+      p.textContent = "自動での公開ができませんでした。下のリンクを開き、「Branch」の「None」→「main」→「Save」を押すと公開できます。";
+      const a = document.createElement("a"); a.href = "https://github.com/"+login+"/"+(extra.full.split("/").pop())+"/settings/pages"; a.target="_blank"; a.rel="noopener"; a.textContent = "公開設定を開く";
+      box.append(p, a);
+    }
+  }
   if (url){ m.append(document.createElement("br")); const a=document.createElement("a"); a.href=url; a.textContent="GitHubで見る"; a.target="_blank"; a.rel="noopener"; m.append(a); }
   showEl("resultCard");
   $("resultCard").scrollIntoView({behavior:"smooth"});
@@ -373,6 +465,7 @@ function renderHistory(){
     const li = document.createElement("li");
     const a = document.createElement("a"); a.href = "https://github.com/"+(login||"")+"/"+h.repo; a.target="_blank"; a.rel="noopener"; a.textContent = h.repo;
     const s = document.createElement("span"); s.className="muted"; s.textContent = h.t+"　"+h.n+"個"+(h.created?"（新規）":"");
+    if (h.app){ const o=document.createElement("a"); o.href=h.app; o.target="_blank"; o.rel="noopener"; o.textContent="開く"; s.append("　", o); }
     li.append(a,s); ul.append(li);
   });
 }
