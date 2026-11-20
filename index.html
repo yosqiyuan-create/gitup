@@ -37,6 +37,8 @@
   a{color:#64d2ff}
   .hidden{display:none}
   .msg{white-space:pre-wrap}
+  a.appName{font-weight:700;font-size:17px;display:block}
+  #historyList li{display:block;padding:8px 0}
   a.openBtn{display:block;text-align:center;font-size:18px;font-weight:700;padding:14px;border-radius:12px;background:var(--ok);color:#000;text-decoration:none;margin:12px 0 6px}
 </style>
 </head>
@@ -88,6 +90,7 @@
 
   <div class="card">
     <h2>これまでのアップ</h2>
+    <p class="muted">アプリ名をタップ（または長押し →「開く」）でアプリが起動します。</p>
     <ul class="files" id="historyList"><li class="muted">まだありません</li></ul>
   </div>
 
@@ -463,9 +466,11 @@ function renderHistory(){
   if (!list.length){ ul.innerHTML = '<li class="muted">まだありません</li>'; return; }
   list.forEach(h => {
     const li = document.createElement("li");
-    const a = document.createElement("a"); a.href = "https://github.com/"+(login||"")+"/"+h.repo; a.target="_blank"; a.rel="noopener"; a.textContent = h.repo;
+    const appUrl = h.app || ("https://"+(login||"").toLowerCase()+".github.io/"+h.repo+"/");
+    const a = document.createElement("a"); a.href = appUrl; a.target="_blank"; a.rel="noopener"; a.textContent = h.repo; a.className = "appName";
     const s = document.createElement("span"); s.className="muted"; s.textContent = h.t+"　"+h.n+"個"+(h.created?"（新規）":"");
-    if (h.app){ const o=document.createElement("a"); o.href=h.app; o.target="_blank"; o.rel="noopener"; o.textContent="開く"; s.append("　", o); }
+    const g = document.createElement("a"); g.href = "https://github.com/"+(login||"")+"/"+h.repo; g.target="_blank"; g.rel="noopener"; g.textContent = "GitHub"; g.className = "muted";
+    s.append("　", g);
     li.append(a,s); ul.append(li);
   });
 }
